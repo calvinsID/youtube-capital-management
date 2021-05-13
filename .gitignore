@@ -1,3 +1,5 @@
 .environment.sh
 node_modules/
 env/
+playground.py
+shared/

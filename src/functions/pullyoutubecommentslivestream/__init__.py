@@ -14,11 +14,8 @@ from azure.cosmosdb.table.tableservice import TableService
 from azure.cosmosdb.table.models import Entity
 
 
-class YoutubeComments():
+class MainClass():
     def __init__(self):
-        self.video_id = os.environ["VIDEO_ID"]
-        self.key_word = "heycalvinc:"
-        self.allowed_transaction_types = ["buy", "sell"]
         self.youtube_client = self.setup_youtube_client()
         self.transaction_queue_client = self.setup_transaction_queue()
         self.table_storage_client = self.setup_table()
@@ -28,7 +25,7 @@ class YoutubeComments():
         os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
         api_service_name = "youtube"
         api_version = "v3"
-        developer_key = os.getenv("YOUTUBE_API_KEY")
+        developer_key = os.getenv("YOUTUBE_API_KEY_2")
 
         return googleapiclient.discovery.build(
             api_service_name, api_version, developerKey=developer_key)
@@ -45,6 +42,14 @@ class YoutubeComments():
         return TableService(account_name=account_name, account_key=account_key)
 
 
+class YoutubeComments(MainClass):
+    def __init__(self):
+        super().__init__()
+
+        self.video_id = os.environ["VIDEO_ID_2"]
+        self.key_word = "heycalvinc:"
+        self.allowed_transaction_types = ["buy", "sell"]
+
     '''
     check if comment_id is already in transactions table.
     if it is, should not continue
@@ -58,6 +63,29 @@ class YoutubeComments():
             alreadyProcessed = True
         return alreadyProcessed
 
+    '''
+    get pagetoken from db
+    '''
+    def get_pagetoken(self):
+        tokens = self.table_storage_client.query_entities(
+            'pagetoken', filter=None, num_results=1)
+        token = None
+        for t in tokens:
+            token = t['value']
+        logging.info('$$$ Got pagetoken: {num}'.format(num=str(token)))
+        return token
+
+    '''
+    update pagetoken in db
+    '''
+    def update_pagetoken(self, token):
+        t = {
+            'PartitionKey': "1",
+            "RowKey": "1",
+            'value': token
+        }
+        self.table_storage_client.update_entity('pagetoken', t)
+        logging.info('$$$ Updated pagetoken: {num}'.format(num=str(token)))
 
     '''
     determine if its a valid ticker
@@ -90,7 +118,7 @@ class YoutubeComments():
                 ticker = split_comment[2].upper()
 
         if formatted_correctly:
-            logging.info('@@ Processing comment with id: {comment_id}'.format(comment_id=comment_id))
+            logging.info('$$ Processing comment with id: {comment_id}'.format(comment_id=comment_id))
             commentEntity = {
                 'PartitionKey': ticker,
                 'RowKey': comment_id,
@@ -103,7 +131,8 @@ class YoutubeComments():
 
             message = "{ticker}*{comment_id}*{transaction_type}*{author}".format(ticker=ticker, comment_id=comment_id, transaction_type=transaction_type, author=author)
             self.transaction_queue_client.send_message(message)
-
+        else:
+            logging.info('$$ Processing comment failed: {comment_text}'.format(comment_text=comment_text))
 
     '''
     keep polling youtube comments until rate limited
@@ -115,52 +144,57 @@ class YoutubeComments():
     def pull_youtube_comments(self) -> None:
         try:
             should_continue = True
-            nextPageToken = None
+            nextPageToken = self.get_pagetoken()
 
             while should_continue:
-                request = self.youtube_client.commentThreads().list(
-                    part="snippet",
-                    maxResults=100,
-                    moderationStatus="published",
-                    order="time",
-                    searchTerms=self.key_word,
-                    textFormat="plainText",
-                    videoId=self.video_id,
+                request = self.youtube_client.liveChatMessages().list(
+                    part="snippet,authorDetails",
+                    maxResults=2000,
+                    liveChatId=self.video_id,
                     pageToken=nextPageToken
                 )
                 response = request.execute()
                 nextPageToken = response['nextPageToken'] if 'nextPageToken' in response else None
-                numberOfResults = response['pageInfo']['totalResults']
-                logging.info('@@@ Number of comments to process: {num}'.format(num=str(numberOfResults)))
-
-                if not nextPageToken:
+                
+                if nextPageToken:
+                    self.update_pagetoken(nextPageToken)
+                else:
                     should_continue = False
+
+                numberOfResults = response['pageInfo']['totalResults']
+                resultsPerPage = response['pageInfo']['resultsPerPage']
+                if numberOfResults == resultsPerPage:
+                    should_continue = False
+
+                logging.info('$$$ Number of comments to process: {num}'.format(num=str(numberOfResults)))
 
                 for comment in response['items']:
                     comment_id = comment['id']
-                    if self.already_processed_before(comment_id):
-                        should_continue = False
-                        break
-                    else:
+                    if not self.already_processed_before(comment_id):
                         try:
-                            comment_data = comment['snippet']['topLevelComment']['snippet']
-                            comment_text = comment_data['textDisplay']
-                            comment_author_name = comment_data['authorDisplayName']
-                            comment_author_dp = comment_data['authorProfileImageUrl']
-                            comment_author_channel_url = comment_data['authorChannelUrl']
+                            comment_text = comment['snippet']['displayMessage']
+                            comment_author_name = comment['authorDetails']['displayName']
+                            comment_author_dp = comment['authorDetails']['profileImageUrl']
+                            comment_author_channel_url = comment['authorDetails']['channelUrl']
 
                             self.process_comment(comment_id=comment_id, comment_text=comment_text, author=comment_author_name, author_dp=comment_author_dp, author_channel=comment_author_channel_url)
                         except Exception as e:
-                            logging.exception('@@@ Exception processing comment. Error: {err}'.format(err=e))      
+                            logging.exception('$$$ Exception processing comment. Error: {err}'.format(err=e))    
+                    else:
+                        try:
+                            comment_text = comment['snippet']['displayMessage']
+                            logging.info('$$ Already processed: {comment_text}'.format(comment_text=comment_text))
+                        except Exception as e:
+                            logging.exception('$$$ Exception processing comment. Error: {err}'.format(err=e))  
         except Exception as e:
-            logging.exception('@@@ Exception pulling youtube comments. Error: {err}'.format(err=e))
+            logging.exception('$$$ Exception pulling youtube comments. Error: {err}'.format(err=e))
 
 
-def main(mytimer: func.TimerRequest) -> None:
+def main(mytimer3: func.TimerRequest) -> None:
     utc_timestamp = datetime.datetime.utcnow().replace(
         tzinfo=datetime.timezone.utc).isoformat()
 
-    if mytimer.past_due:
+    if mytimer3.past_due:
         logging.info('The timer is past due!')
 
     logging.info('Python timer trigger function ran at %s', utc_timestamp)

@@ -9,6 +9,4 @@ For a `TimerTrigger` to work, you provide a schedule in the form of a [cron expr
 
 ## 
 
-Azure function to get all youtube comments, and put stock transaction messages in azure queue
-To publish:
-    func azure functionapp publish pull-youtube-comments --build remote
+Azure function to get all youtube comments from the video (https://www.youtube.com/watch?v=5f7Zw3gAZo0&t=1s) and put stock transaction messages in azure queue
