@@ -1,0 +1,3 @@
+.environment.sh
+node_modules/
+env/
